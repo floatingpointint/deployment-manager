@@ -5,7 +5,7 @@
     "deploy:server:api": "npm run load:ssh:github && cd ~/services/mercias-quill-sites-api && git pull && npm i && pm2 stop sites-api && npm run build && pm2 restart sites-api && cd ~/services/deployment-commands",
     "deploy:server:auth": "npm run load:ssh:github && cd ~/services/mercias-quill-sites-auth && git pull && npm i && pm2 stop sites-auth && npm run build && pm2 restart sites-auth && cd ~/services/deployment-commands",
     "deploy:server:www": "npm run load:ssh:github && cd ~/services/mercias-quill-sites-www && git pull && npm i && pm2 stop sites-www && npm run build && pm2 restart sites-www",
-    "deploy:server:all": "npm run deploy:server:api && npm run deploy:server:auth && npm run deploy:server:www",
+    "deploy:server:sites": "npm run deploy:server:api && npm run deploy:server:auth && npm run deploy:server:www",
     "deploy:server:moon": "npm run load:ssh:github && cd ~/services/moonlit-shanty && git pull && npm i && pm2 stop moon && npm run build && pm2 restart moon"
   }
 }
