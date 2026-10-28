@@ -43,7 +43,6 @@
 
     "paths": {
       "@utils/*": ["./src/utils/*"],
-      "@svg/*": ["./src/components/svg/*"],
       "@/*": ["./src/*"]
     }
   },
