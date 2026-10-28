@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
-    "start": "next start -p 6000",
+    "start": "next start -p 6060",
     "lint": "eslint --fix",
     "prettier": "prettier --write \"**/*.{json,js,cjs,mjs,jsx,ts,tsx}\"",
     "deploy:server": "pm2 stop sites-api sites-auth sites-www && cd ~/services/mercias-quill-sites-api && git pull && npm run build && rm -rf ../mercias-quill-sites-auth/.next ../mercias-quill-sites-www/.next && cp -r .next ../mercias-quill-sites-auth/ && cp -r .next ../mercias-quill-sites-www/ && cd ../mercias-quill-sites-auth && git pull && cd ../mercias-quill-sites-www && git pull && pm2 start sites-api sites-auth sites-www"
