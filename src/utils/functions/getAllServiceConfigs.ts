@@ -50,7 +50,7 @@ export const schema = z.object({
 
 export type Service = z.infer<typeof schema>["Services"][number];
 
-export default async function getConfigFile() {
+export default async function getAllServiceConfigs() {
   if (!fs.existsSync(configFilename)) {
     throw new Error(`Config file not found: ${configFilename}`);
   }
