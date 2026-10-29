@@ -314,17 +314,17 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
 
   const environmentParse = dotenv.config({
     path: path.join(buildFilesDirectoryPath, ".env"),
-    processEnv: {},
+    override: true,
   });
 
   if (environmentParse.parsed) {
     env = environmentParse.parsed;
   } else {
-    env = {};
+    env = process.env;
   }
 
   env = {
-    NODE_ENV: "production",
+    NODE_ENV: "production", // required for Next.js Build
     ...env,
   } satisfies NodeJS.ProcessEnv;
 
