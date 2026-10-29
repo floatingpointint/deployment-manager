@@ -174,6 +174,28 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     fs.mkdirSync(path.dirname(deploymentLogsPath), { recursive: true });
   }
 
+  await appendFile(
+    deploymentLogsPath,
+    "= STARTING DEPLOYMENT SERVICE =\n",
+    "utf8"
+  );
+  await appendFile(
+    deploymentLogsPath,
+    `REPOSITORY: ${payload.repository.full_name}:${service.remote.branch}\n`,
+    "utf8"
+  );
+  await appendFile(
+    deploymentLogsPath,
+    `COMMIT HASH: ${payload.after}\n`,
+    "utf8"
+  );
+  await appendFile(deploymentLogsPath, `BUILD ID: ${buildId}\n`, "utf8");
+  await appendFile(
+    deploymentLogsPath,
+    `BUILD PATH: ${buildFilesDirectoryPath}\n\n`,
+    "utf8"
+  );
+
   serviceBuilds.set(payload.after, BuildStates.CloningBuildFiles);
 
   await appendFile(deploymentLogsPath, "== CLONING BUILD FILES ==\n", "utf8");
@@ -310,21 +332,15 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     "utf8"
   );
 
-  let env: NodeJS.ProcessEnv;
-
   const environmentParse = dotenv.config({
     path: path.join(buildFilesDirectoryPath, ".env"),
-    override: true,
   });
 
-  if (environmentParse.parsed) {
-    env = {
-      NODE_ENV: "production",
-      ...environmentParse.parsed,
-    };
-  } else {
-    env = process.env;
-  }
+  const env = {
+    ...process.env,
+    NODE_ENV: "production",
+    ...environmentParse.parsed,
+  } satisfies NodeJS.ProcessEnv;
 
   const buildCommandResult = await exec(service.build.build_command, {
     cwd: buildFilesDirectoryPath,
