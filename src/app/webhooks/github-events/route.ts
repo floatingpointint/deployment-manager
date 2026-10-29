@@ -15,11 +15,12 @@ import { simpleGit } from "simple-git";
 import YAML from "yaml";
 
 import ENV from "@utils/environment/variables";
-import getConfigFile, { type Service } from "@utils/functions/getConfigFile";
+import type { Deployment } from "@utils/functions/getAllDeployments";
+import getAllServiceConfigs, {
+  type Service,
+} from "@utils/functions/getAllServiceConfigs";
 import getPm2Names from "@utils/functions/getPm2Names";
-import getServiceDeployments, {
-  type Deployment,
-} from "@utils/functions/getServiceDeployments";
+import getServiceDeployments from "@utils/functions/getServiceDeployments";
 
 import pathConfig from "@/config/paths";
 import { serviceBuildStates } from "@/config/states";
@@ -59,7 +60,7 @@ export async function POST(request: NextRequest) {
   if (!payloadText) return new NextResponse(null, { status: 400 });
   const payload = JSON.parse(payloadText) as Root;
 
-  const services = await getConfigFile();
+  const services = await getAllServiceConfigs();
 
   for (const service of services) {
     if (
@@ -99,15 +100,9 @@ export enum BuildStates {
 }
 
 async function updateServiceWithMutex(service: Service, payload: Root) {
-  const serviceBuilds = nullishMapGetter(
-    serviceBuildStates,
-    service.process_id,
-    new Map<string, string>()
-  );
-
   const git = simpleGit(path.join(pathConfig.services, service.paths.root));
 
-  serviceBuilds.set(payload.after, BuildStates.FetchingCommitHash);
+  serviceBuildStates.set(service.process_id, BuildStates.FetchingCommitHash);
 
   const pullResult = await git
     .fetch()
@@ -117,10 +112,13 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
   if (pullResult[0] === false) {
     // eslint-disable-next-line no-console
     console.error("failed to checkout to branch");
-    return serviceBuilds.delete(payload.after);
+    return serviceBuildStates.delete(payload.after);
   }
 
-  serviceBuilds.set(payload.after, BuildStates.ReinstallingServiceDependencies);
+  serviceBuildStates.set(
+    service.process_id,
+    BuildStates.ReinstallingServiceDependencies
+  );
 
   const installResult = await exec(service.build.install_command, {
     cwd: path.join(pathConfig.services, service.paths.root),
@@ -130,7 +128,7 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
   if (installResult[0] === false) {
     // eslint-disable-next-line no-console
     console.error("failed to install dependencies in services");
-    return serviceBuilds.delete(payload.after);
+    return serviceBuildStates.delete(payload.after);
   }
 
   const buildId = Date.now().toString(32);
@@ -196,7 +194,7 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     "utf8"
   );
 
-  serviceBuilds.set(payload.after, BuildStates.CloningBuildFiles);
+  serviceBuildStates.set(service.process_id, BuildStates.CloningBuildFiles);
 
   await appendFile(deploymentLogsPath, "== CLONING BUILD FILES ==\n", "utf8");
   await appendFile(
@@ -238,7 +236,7 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
       "utf8"
     );
 
-    return serviceBuilds.delete(payload.after);
+    return serviceBuildStates.delete(payload.after);
   }
 
   await appendFile(
@@ -275,10 +273,10 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
       "utf8"
     );
 
-    return serviceBuilds.delete(payload.after);
+    return serviceBuildStates.delete(payload.after);
   }
 
-  serviceBuilds.set(payload.after, BuildStates.CopyingSourceFiles);
+  serviceBuildStates.set(service.process_id, BuildStates.CopyingSourceFiles);
 
   await appendFile(deploymentLogsPath, "== COPYING SOURCE FILES ==\n", "utf8");
 
@@ -304,7 +302,10 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
 
   await appendFile(deploymentLogsPath, "\n", "utf8");
 
-  serviceBuilds.set(payload.after, BuildStates.InstallingBuildDependencies);
+  serviceBuildStates.set(
+    service.process_id,
+    BuildStates.InstallingBuildDependencies
+  );
 
   await appendFile(
     deploymentLogsPath,
@@ -350,10 +351,10 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
       "utf8"
     );
 
-    return serviceBuilds.delete(payload.after);
+    return serviceBuildStates.delete(payload.after);
   }
 
-  serviceBuilds.set(payload.after, BuildStates.RunningBuildCommand);
+  serviceBuildStates.set(service.process_id, BuildStates.RunningBuildCommand);
 
   await appendFile(deploymentLogsPath, "== RUNNING BUILD COMMAND ==\n");
   await appendFile(
@@ -385,10 +386,10 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
       "utf8"
     );
 
-    return serviceBuilds.delete(payload.after);
+    return serviceBuildStates.delete(payload.after);
   }
 
-  serviceBuilds.set(payload.after, BuildStates.StartingPm2Process);
+  serviceBuildStates.set(service.process_id, BuildStates.StartingPm2Process);
 
   await appendFile(deploymentLogsPath, "== STARTING PM2 PROCESS ==\n", "utf8");
 
@@ -451,7 +452,7 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
       "utf8"
     );
 
-    return serviceBuilds.delete(payload.after);
+    return serviceBuildStates.delete(payload.after);
   }
 
   newDeployment.status.success = true;
@@ -493,7 +494,7 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     "utf8"
   );
 
-  serviceBuilds.delete(payload.after);
+  serviceBuildStates.delete(payload.after);
 }
 
 function nullishMapGetter<K, V>(map: Map<K, V>, key: K, defaultValue: V): V {

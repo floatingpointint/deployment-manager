@@ -1,1 +1,1 @@
-export const serviceBuildStates = new Map<string, Map<string, string>>();
+export const serviceBuildStates = new Map<string, string>();

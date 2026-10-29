@@ -11,6 +11,8 @@ function env(name: string, optional = false) {
 
 const ENV = {
   GITHUB_WEBHOOK_SECRET: env("GITHUB_WEBHOOK_SECRET"),
+  ALLOW_ADMIN_IN_PRODUCTION: !!env("ALLOW_ADMIN_IN_PRODUCTION", true),
+  ADMIN_PASSWORD: env("ADMIN_PASSWORD", true),
 } as const;
 
 export default ENV;
