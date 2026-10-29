@@ -310,8 +310,8 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
 
   const env = {
     ...process.env,
-    NODE_ENV: "production",
     ...environmentParse.parsed,
+    NODE_ENV: "production",
   } satisfies NodeJS.ProcessEnv;
 
   const installTargetResult = await exec(service.build.install_command, {
