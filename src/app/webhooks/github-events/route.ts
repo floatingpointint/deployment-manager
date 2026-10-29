@@ -310,7 +310,7 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     "utf8"
   );
 
-  let env;
+  let env: NodeJS.ProcessEnv;
 
   const environmentParse = dotenv.config({
     path: path.join(buildFilesDirectoryPath, ".env"),
@@ -318,15 +318,13 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
   });
 
   if (environmentParse.parsed) {
-    env = environmentParse.parsed;
+    env = {
+      NODE_ENV: "production",
+      ...environmentParse.parsed,
+    };
   } else {
     env = process.env;
   }
-
-  env = {
-    NODE_ENV: "production", // required for Next.js Build
-    ...env,
-  } satisfies NodeJS.ProcessEnv;
 
   const buildCommandResult = await exec(service.build.build_command, {
     cwd: buildFilesDirectoryPath,
