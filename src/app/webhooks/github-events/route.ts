@@ -304,8 +304,19 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     "utf8"
   );
 
+  const environmentParse = dotenv.config({
+    path: path.join(buildFilesDirectoryPath, ".env"),
+  });
+
+  const env = {
+    ...process.env,
+    NODE_ENV: "production",
+    ...environmentParse.parsed,
+  } satisfies NodeJS.ProcessEnv;
+
   const installTargetResult = await exec(service.build.install_command, {
     cwd: buildFilesDirectoryPath,
+    env,
   })
     .then(() => [true, null] as const)
     .catch((error) => [false, error] as const);
@@ -331,16 +342,6 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     [">>", service.build.build_command].join(" ") + "\n\n",
     "utf8"
   );
-
-  const environmentParse = dotenv.config({
-    path: path.join(buildFilesDirectoryPath, ".env"),
-  });
-
-  const env = {
-    ...process.env,
-    NODE_ENV: "production",
-    ...environmentParse.parsed,
-  } satisfies NodeJS.ProcessEnv;
 
   const buildCommandResult = await exec(service.build.build_command, {
     cwd: buildFilesDirectoryPath,
@@ -426,8 +427,9 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
   newDeployment.status.active = true;
   newDeployment.paths.pm2_config = pm2ConfigPath;
 
-  const lastDeployment = deploymentsList[deploymentsList.length - 2];
-  if (lastDeployment) lastDeployment.status.active = false;
+  for (const deployment of deploymentsList.slice(0, -1)) {
+    deployment.status.active = false;
+  }
 
   await appendFile(
     deploymentLogsPath,
