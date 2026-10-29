@@ -231,6 +231,13 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
 
     // eslint-disable-next-line no-console
     console.error("failed to clone repository");
+
+    fs.writeFileSync(
+      deploymentHistory[1],
+      YAML.stringify({ Deployments: deploymentsList }),
+      "utf8"
+    );
+
     return serviceBuilds.delete(payload.after);
   }
 
@@ -261,6 +268,12 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
 
     // eslint-disable-next-line no-console
     console.error(`failed to checkout commit ${payload.after}`);
+
+    fs.writeFileSync(
+      deploymentHistory[1],
+      YAML.stringify({ Deployments: deploymentsList }),
+      "utf8"
+    );
 
     return serviceBuilds.delete(payload.after);
   }
@@ -331,6 +344,12 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     // eslint-disable-next-line no-console
     console.error("failed to install build dependencies");
 
+    fs.writeFileSync(
+      deploymentHistory[1],
+      YAML.stringify({ Deployments: deploymentsList }),
+      "utf8"
+    );
+
     return serviceBuilds.delete(payload.after);
   }
 
@@ -359,6 +378,12 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
 
     // eslint-disable-next-line no-console
     console.error("failed to run build command");
+
+    fs.writeFileSync(
+      deploymentHistory[1],
+      YAML.stringify({ Deployments: deploymentsList }),
+      "utf8"
+    );
 
     return serviceBuilds.delete(payload.after);
   }
@@ -419,6 +444,12 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
       "utf8"
     );
     await appendFile(deploymentLogsPath, startPm2Processes[1] + "", "utf8");
+
+    fs.writeFileSync(
+      deploymentHistory[1],
+      YAML.stringify({ Deployments: deploymentsList }),
+      "utf8"
+    );
 
     return serviceBuilds.delete(payload.after);
   }
