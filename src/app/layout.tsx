@@ -14,7 +14,7 @@ export const metadata: Metadata = {
     template: `%s | ${siteConfig.name}`,
   },
   description: siteConfig.description,
-  icons: { icon: "/git_merge_icon.svg",  },
+  icons: { icon: "/git_merge_icon.svg" },
   applicationName: siteConfig.name,
 };
 
