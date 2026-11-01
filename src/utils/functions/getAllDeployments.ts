@@ -24,11 +24,9 @@ export const schema = z.object({
 export type Deployment = z.infer<typeof schema>["Deployments"][number];
 
 export default async function getAllDeployments() {
- 
   if (!fs.existsSync(pathConfig.deployments)) {
-    throw new Error(
-      `Deployments path does not exist: ${pathConfig.deployments}`
-    );
+    fs.mkdirSync(pathConfig.deployments, { recursive: true });
+    return {} as const;
   }
 
   const subdirectoriesInDeployments = fs
