@@ -3,10 +3,9 @@ import type { NextRequest } from "next/server";
 
 import child_process from "child_process";
 import crypto from "crypto";
-import fs from "fs";
-import { appendFile } from "fs/promises";
+import fs, { appendFile } from "fs";
+import { appendFile as appendFileAsync } from "fs/promises";
 import path from "path";
-import { promisify } from "util";
 
 import { Mutex } from "async-mutex";
 import dotenv from "dotenv";
@@ -24,8 +23,6 @@ import getServiceDeployments from "@utils/functions/getServiceDeployments";
 
 import pathConfig from "@/config/paths";
 import { serviceBuildStates } from "@/config/states";
-
-const exec = promisify(child_process.exec);
 
 const getMutexMutex = new Mutex();
 const serviceMutexes = new Map<string, Mutex>();
@@ -63,6 +60,8 @@ export async function POST(request: NextRequest) {
   const services = await getAllServiceConfigs();
 
   for (const service of services) {
+    if (service.disabled) continue;
+
     if (
       service.remote.name === payload.repository.full_name &&
       service.remote.branch === payload.ref.replace("refs/heads/", "")
@@ -74,7 +73,15 @@ export async function POST(request: NextRequest) {
   return new NextResponse(null, { status: 200 });
 }
 
-async function updateService(service: Service, payload: Root) {
+type CommitLike = {
+  after: string;
+  repository: {
+    full_name: string;
+    ssh_url: string;
+  };
+};
+
+export async function updateService(service: Service, payload: CommitLike) {
   const serviceMutex = await getMutexMutex.runExclusive(async () => {
     return nullishMapGetter(serviceMutexes, service.name, new Mutex());
   });
@@ -88,7 +95,7 @@ export enum BuildStates {
   FetchingCommitHash = "fetching_commit_hash",
   ReinstallingServiceDependencies = "reinstalling_service_dependencies",
 
-  CreatingBuildHashes = "creating_build_hashes",
+  DeletedOldBuildFiles = "deleted_old_build_files",
   InstallingBuildDependencies = "installing_build_dependencies",
   CloningBuildFiles = "cloning_build_files",
   CopyingSourceFiles = "copying_source_files",
@@ -99,7 +106,12 @@ export enum BuildStates {
   Failed = "failed",
 }
 
-async function updateServiceWithMutex(service: Service, payload: Root) {
+async function updateServiceWithMutex(service: Service, payload: CommitLike) {
+  const servicePath = path.join(pathConfig.services, service.paths.root);
+  if (!fs.existsSync(servicePath)) {
+    throw new Error(`Service path does not exist: ${servicePath}.`);
+  }
+
   const git = simpleGit(path.join(pathConfig.services, service.paths.root));
 
   serviceBuildStates.set(service.process_id, BuildStates.FetchingCommitHash);
@@ -111,8 +123,8 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     .catch((error) => [false, error] as const);
   if (pullResult[0] === false) {
     // eslint-disable-next-line no-console
-    console.error("failed to checkout to branch");
-    return serviceBuildStates.delete(payload.after);
+    console.error("failed to checkout to branch: ", pullResult[1]);
+    return serviceBuildStates.delete(service.process_id);
   }
 
   serviceBuildStates.set(
@@ -120,15 +132,14 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     BuildStates.ReinstallingServiceDependencies
   );
 
-  const installResult = await exec(service.build.install_command, {
-    cwd: path.join(pathConfig.services, service.paths.root),
-  })
-    .then(() => [true, null] as const)
-    .catch((error) => [false, error] as const);
-  if (installResult[0] === false) {
+  const installResult = await promisify_spawn(
+    service.build.install_command,
+    path.join(pathConfig.services, service.paths.root)
+  );
+  if (installResult === false) {
     // eslint-disable-next-line no-console
     console.error("failed to install dependencies in services");
-    return serviceBuildStates.delete(payload.after);
+    return serviceBuildStates.delete(service.process_id);
   }
 
   const buildId = Date.now().toString(32);
@@ -162,52 +173,106 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     },
   };
 
-  const deploymentHistory = await getServiceDeployments(service.process_id);
-  const deploymentsList = deploymentHistory[0].slice(-199);
-  deploymentsList.push(newDeployment);
-
   // the deploymentLogsPath will include deploymentHistory in a parent
   // directory so it does not need to be rechecked and created
   if (!fs.existsSync(path.dirname(deploymentLogsPath))) {
     fs.mkdirSync(path.dirname(deploymentLogsPath), { recursive: true });
   }
 
-  await appendFile(
+  await appendFileAsync(
     deploymentLogsPath,
     "= STARTING DEPLOYMENT SERVICE =\n",
     "utf8"
   );
-  await appendFile(
+  await appendFileAsync(
     deploymentLogsPath,
     `REPOSITORY: ${payload.repository.full_name}:${service.remote.branch}\n`,
     "utf8"
   );
-  await appendFile(
+  await appendFileAsync(
     deploymentLogsPath,
     `COMMIT HASH: ${payload.after}\n`,
     "utf8"
   );
-  await appendFile(deploymentLogsPath, `BUILD ID: ${buildId}\n`, "utf8");
-  await appendFile(
+  await appendFileAsync(deploymentLogsPath, `BUILD ID: ${buildId}\n`, "utf8");
+  await appendFileAsync(
     deploymentLogsPath,
-    `BUILD PATH: ${buildFilesDirectoryPath}\n\n`,
+    `BUILD PATH: ${buildFilesDirectoryPath}\n`,
+    "utf8"
+  );
+
+  serviceBuildStates.set(service.process_id, BuildStates.DeletedOldBuildFiles);
+
+  await appendFileAsync(
+    deploymentLogsPath,
+    "\n== DELETING OLD BUILD FILES ==\n",
+    "utf8"
+  );
+
+  const deploymentHistory = await getServiceDeployments(service.process_id);
+
+  const deploymentsList = deploymentHistory[0];
+
+  const indexOfLastSuccessfulDeployment = deploymentsList.findLastIndex(
+    (deployment) => deployment.status.success
+  );
+
+  let deleteCount = 0;
+  for (
+    let i = 0;
+    i < deploymentsList.length - service.build.builds_to_retain;
+    i++
+  ) {
+    if (i === indexOfLastSuccessfulDeployment) continue;
+
+    const deploymentToDelete = deploymentsList[i - deleteCount];
+    if (!deploymentToDelete) throw new Error("deploymentToDelete undefined");
+
+    await appendFileAsync(
+      deploymentLogsPath,
+      ["$$", "rm", "-rf", deploymentToDelete.paths.root].join(" ") + "\n",
+      "utf8"
+    );
+
+    fs.rmSync(deploymentToDelete.paths.root, { recursive: true, force: true });
+
+    await appendFileAsync(
+      deploymentLogsPath,
+      ["$$", "rm", "-rf", deploymentToDelete.paths.logs].join(" ") + "\n",
+      "utf8"
+    );
+
+    fs.rmSync(deploymentToDelete.paths.logs, { recursive: true, force: true });
+
+    deploymentsList.splice(i - deleteCount++, 1);
+  }
+
+  deploymentsList.push(newDeployment);
+
+  fs.writeFileSync(
+    deploymentHistory[1],
+    YAML.stringify({ Deployments: deploymentsList }),
     "utf8"
   );
 
   serviceBuildStates.set(service.process_id, BuildStates.CloningBuildFiles);
 
-  await appendFile(deploymentLogsPath, "== CLONING BUILD FILES ==\n", "utf8");
-  await appendFile(
+  await appendFileAsync(
+    deploymentLogsPath,
+    "\n== CLONING BUILD FILES ==\n",
+    "utf8"
+  );
+  await appendFileAsync(
     deploymentLogsPath,
     [
-      ">>",
+      "$$",
       "git clone",
       payload.repository.ssh_url,
       buildFilesDirectoryPath,
       "--origin",
       payload.repository.full_name,
       "--no-checkout",
-    ].join(" ") + "\n\n",
+    ].join(" ") + "\n",
     "utf8"
   );
 
@@ -220,33 +285,19 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     .then(() => [true, null] as const)
     .catch((error) => [false, error] as const);
   if (cloneResult[0] === false) {
-    await appendFile(
-      deploymentLogsPath,
-      `[FAILURE]: Error cloning repository\n\n`,
-      "utf8"
-    );
-    await appendFile(deploymentLogsPath, cloneResult[1] + "", "utf8");
+    await appendFileAsync(deploymentLogsPath, cloneResult[1] + "", "utf8");
 
-    // eslint-disable-next-line no-console
-    console.error("failed to clone repository");
-
-    fs.writeFileSync(
-      deploymentHistory[1],
-      YAML.stringify({ Deployments: deploymentsList }),
-      "utf8"
-    );
-
-    return serviceBuildStates.delete(payload.after);
+    return serviceBuildStates.delete(service.process_id);
   }
 
-  await appendFile(
+  await appendFileAsync(
     deploymentLogsPath,
-    "== CHECKING OUT TARGET COMMIT ==\n",
+    "\n== CHECKING OUT TARGET COMMIT ==\n",
     "utf8"
   );
-  await appendFile(
+  await appendFileAsync(
     deploymentLogsPath,
-    [">>", "git checkout", payload.after].join(" ") + "\n\n",
+    ["$$", "git checkout", payload.after].join(" ") + "\n",
     "utf8"
   );
 
@@ -257,28 +308,22 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     .then(() => [true, null] as const)
     .catch((error) => [false, error] as const);
   if (checkoutTargetResult[0] === false) {
-    await appendFile(
+    await appendFileAsync(
       deploymentLogsPath,
-      `[FAILURE]: Error checking out commit ${payload.after}\n\n`,
-      "utf8"
-    );
-    await appendFile(deploymentLogsPath, checkoutTargetResult[1] + "", "utf8");
-
-    // eslint-disable-next-line no-console
-    console.error(`failed to checkout commit ${payload.after}`);
-
-    fs.writeFileSync(
-      deploymentHistory[1],
-      YAML.stringify({ Deployments: deploymentsList }),
+      checkoutTargetResult[1] + "",
       "utf8"
     );
 
-    return serviceBuildStates.delete(payload.after);
+    return serviceBuildStates.delete(service.process_id);
   }
 
   serviceBuildStates.set(service.process_id, BuildStates.CopyingSourceFiles);
 
-  await appendFile(deploymentLogsPath, "== COPYING SOURCE FILES ==\n", "utf8");
+  await appendFileAsync(
+    deploymentLogsPath,
+    "\n== COPYING SOURCE FILES ==\n",
+    "utf8"
+  );
 
   for (const file of service.build.files_to_copy) {
     const serviceFilePath = path.join(
@@ -288,33 +333,38 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     );
     const buildFilePath = path.join(buildFilesDirectoryPath, file);
 
-    await appendFile(
+    await appendFileAsync(
       deploymentLogsPath,
-      [">>", "cp", serviceFilePath, buildFilePath, "-rf"].join(" ") + "\n",
+      ["$$", "cp", serviceFilePath, buildFilePath, "-rf"].join(" ") + "\n",
       "utf8"
     );
 
-    fs.cpSync(serviceFilePath, buildFilePath, {
-      recursive: true,
-      force: true,
-    });
-  }
+    try {
+      fs.cpSync(serviceFilePath, buildFilePath, {
+        recursive: true,
+        force: true,
+      });
+    } catch (error) {
+      await appendFileAsync(deploymentLogsPath, error + "", "utf8");
 
-  await appendFile(deploymentLogsPath, "\n", "utf8");
+      fs.writeFileSync(
+        deploymentHistory[1],
+        YAML.stringify({ Deployments: deploymentsList }),
+        "utf8"
+      );
+
+      return serviceBuildStates.delete(service.process_id);
+    }
+  }
 
   serviceBuildStates.set(
     service.process_id,
     BuildStates.InstallingBuildDependencies
   );
 
-  await appendFile(
+  await appendFileAsync(
     deploymentLogsPath,
-    "== INSTALLING BUILD DEPENDENCIES ==\n",
-    "utf8"
-  );
-  await appendFile(
-    deploymentLogsPath,
-    [">>", service.build.install_command].join(" ") + "\n\n",
+    "\n== INSTALLING BUILD DEPENDENCIES ==\n",
     "utf8"
   );
 
@@ -328,70 +378,35 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     NODE_ENV: "production",
   } satisfies NodeJS.ProcessEnv;
 
-  const installTargetResult = await exec(service.build.install_command, {
-    cwd: buildFilesDirectoryPath,
-    env,
-  })
-    .then(() => [true, null] as const)
-    .catch((error) => [false, error] as const);
-  if (installTargetResult[0] === false) {
-    await appendFile(
-      deploymentLogsPath,
-      `[FAILURE]: Error installing build dependencies\n\n`,
-      "utf8"
-    );
-    await appendFile(deploymentLogsPath, installTargetResult[1] + "", "utf8");
-
-    // eslint-disable-next-line no-console
-    console.error("failed to install build dependencies");
-
-    fs.writeFileSync(
-      deploymentHistory[1],
-      YAML.stringify({ Deployments: deploymentsList }),
-      "utf8"
-    );
-
-    return serviceBuildStates.delete(payload.after);
+  const installTargetResult = await promisify_spawn(
+    service.build.install_command,
+    buildFilesDirectoryPath,
+    { env, output: deploymentLogsPath }
+  );
+  if (installTargetResult === false) {
+    return serviceBuildStates.delete(service.process_id);
   }
 
   serviceBuildStates.set(service.process_id, BuildStates.RunningBuildCommand);
 
-  await appendFile(deploymentLogsPath, "== RUNNING BUILD COMMAND ==\n");
-  await appendFile(
-    deploymentLogsPath,
-    [">>", service.build.build_command].join(" ") + "\n\n",
-    "utf8"
+  await appendFileAsync(deploymentLogsPath, "\n== RUNNING BUILD COMMAND ==\n");
+
+  const buildCommandResult = await promisify_spawn(
+    service.build.build_command,
+    buildFilesDirectoryPath,
+    { env, output: deploymentLogsPath }
   );
-
-  const buildCommandResult = await exec(service.build.build_command, {
-    cwd: buildFilesDirectoryPath,
-    env,
-  })
-    .then(() => [true, null] as const)
-    .catch((error) => [false, error] as const);
-  if (buildCommandResult[0] === false) {
-    await appendFile(
-      deploymentLogsPath,
-      `[FAILURE]: Error running build command\n\n`,
-      "utf8"
-    );
-    await appendFile(deploymentLogsPath, buildCommandResult[1] + "", "utf8");
-
-    // eslint-disable-next-line no-console
-    console.error("failed to run build command");
-
-    fs.writeFileSync(
-      deploymentHistory[1],
-      YAML.stringify({ Deployments: deploymentsList }),
-      "utf8"
-    );
-
-    return serviceBuildStates.delete(payload.after);
+  if (buildCommandResult === false) {
+    return serviceBuildStates.delete(service.process_id);
   }
 
   serviceBuildStates.set(service.process_id, BuildStates.StartingPm2Process);
 
-  await appendFile(deploymentLogsPath, "== STARTING PM2 PROCESS ==\n", "utf8");
+  await appendFileAsync(
+    deploymentLogsPath,
+    "\n== STARTING PM2 PROCESS ==\n",
+    "utf8"
+  );
 
   const pm2ConfigPath = path.join(
     buildFilesDirectoryPath,
@@ -400,59 +415,23 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
 
   const pm2ProcessesInBuild = await getPm2Names(pm2ConfigPath);
 
-  await appendFile(
-    deploymentLogsPath,
-    [">>", "pm2 delete", pm2ProcessesInBuild.join(" ")].join(" ") + "\n",
-    "utf8"
-  );
-
-  const deletePm2Processes = await exec(
+  // THIS STATEMENT DOES NOT NEED TO BE RETURNED ON ERROR
+  // AS IT IS EXPECTED THAT THE PM2 PROCESS MAY NOT EXIST YET
+  await promisify_spawn(
     `pm2 delete ${pm2ProcessesInBuild.join(" ")}`,
-    {
-      cwd: buildFilesDirectoryPath,
-    }
-  )
-    .then(() => [true, null] as const)
-    .catch((error) => [false, error] as const);
-  if (deletePm2Processes[0] === false) {
-    await appendFile(
-      deploymentLogsPath,
-      `[FAILURE]: Error deleting PM2 processes\n\n`,
-      "utf8"
-    );
-    await appendFile(deploymentLogsPath, deletePm2Processes[1] + "", "utf8");
-
-    // THIS STATEMENT DOES NOT NEED TO BE RETURNED ON ERROR
-    // AS IT IS EXPECTED THAT THE PM2 PROCESS MAY NOT EXIST YET
-  }
-
-  await appendFile(
-    deploymentLogsPath,
-    [">>", "pm2 start", pm2ConfigPath].join(" ") + "\n\n",
-    "utf8"
+    buildFilesDirectoryPath,
+    { output: deploymentLogsPath }
   );
 
-  const startPm2Processes = await exec(
+  await appendFileAsync(deploymentLogsPath, "\n", "utf8");
+
+  const startPm2Processes = await promisify_spawn(
     `pm2 start "${service.paths.pm2_config}"`,
-    { cwd: buildFilesDirectoryPath, env }
-  )
-    .then(() => [true, null] as const)
-    .catch((error) => [false, error] as const);
-  if (startPm2Processes[0] === false) {
-    await appendFile(
-      deploymentLogsPath,
-      `[FAILURE]: Error starting PM2 processes\n\n`,
-      "utf8"
-    );
-    await appendFile(deploymentLogsPath, startPm2Processes[1] + "", "utf8");
-
-    fs.writeFileSync(
-      deploymentHistory[1],
-      YAML.stringify({ Deployments: deploymentsList }),
-      "utf8"
-    );
-
-    return serviceBuildStates.delete(payload.after);
+    buildFilesDirectoryPath,
+    { env, output: deploymentLogsPath }
+  );
+  if (startPm2Processes === false) {
+    return serviceBuildStates.delete(service.process_id);
   }
 
   newDeployment.status.success = true;
@@ -463,19 +442,19 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     deployment.status.active = false;
   }
 
-  await appendFile(
+  await appendFileAsync(
     deploymentLogsPath,
-    "== UPDATING DEPLOYMENT HISTORY ==\n",
+    "\n== UPDATING DEPLOYMENT HISTORY ==\n",
     "utf8"
   );
 
-  await appendFile(
+  await appendFileAsync(
     deploymentLogsPath,
-    [">>", "nano", deploymentHistory[1]].join(" ") + "\n",
+    ["$$", "nano", deploymentHistory[1]].join(" ") + "\n\n",
     "utf8"
   );
 
-  await appendFile(
+  await appendFileAsync(
     deploymentLogsPath,
     JSON.stringify(deploymentsList[deploymentsList.length - 1], null, 2) +
       "\n\n",
@@ -488,13 +467,13 @@ async function updateServiceWithMutex(service: Service, payload: Root) {
     "utf8"
   );
 
-  await appendFile(
+  await appendFileAsync(
     deploymentLogsPath,
     "=== SUCCESSFULLY DEPLOYED NEW VERSION ===\n",
     "utf8"
   );
 
-  serviceBuildStates.delete(payload.after);
+  serviceBuildStates.delete(service.process_id);
 }
 
 function nullishMapGetter<K, V>(map: Map<K, V>, key: K, defaultValue: V): V {
@@ -503,4 +482,76 @@ function nullishMapGetter<K, V>(map: Map<K, V>, key: K, defaultValue: V): V {
 
   map.set(key, defaultValue);
   return defaultValue;
+}
+
+async function promisify_spawn(
+  command: string,
+  cwd: string,
+  {
+    env,
+    output,
+  }: {
+    env?: NodeJS.ProcessEnv;
+    output?: string;
+  } = {}
+) {
+  return new Promise<boolean>((resolve, reject) => {
+    const startTime = Date.now();
+
+    const spawnOptions: child_process.SpawnOptionsWithStdioTuple<
+      child_process.StdioNull,
+      child_process.StdioPipe,
+      child_process.StdioPipe
+    > = {
+      shell: true,
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    };
+
+    spawnOptions.env = {
+      ...process.env,
+      ...(env ?? {}),
+      FORCE_COLOR: "0",
+      NO_COLOR: "1",
+    };
+
+    if (output) {
+      appendFile(output, `$$ ${command}\n~ ${cwd}\n\n`, (err) => {
+        if (err) reject(err);
+      });
+    }
+
+    const child = child_process.spawn(command, spawnOptions);
+
+    child.stdout.on("data", (data: Buffer) => {
+      if (output) {
+        appendFile(output, data.toString(), (err) => {
+          if (err) reject(err);
+        });
+      }
+    });
+
+    child.stderr.on("data", (data: Buffer) => {
+      if (output) {
+        appendFile(output, "\n" + data.toString() + "\n", (err) => {
+          if (err) reject(err);
+        });
+      }
+    });
+
+    child.on("close", (code) => {
+      if (output) {
+        appendFile(
+          output,
+          `[process ran for ${((Date.now() - startTime) / 1000).toFixed(3)}s]\n`,
+          (err) => {
+            if (err) reject(err);
+          }
+        );
+      }
+
+      if (code === 0) resolve(true);
+      else resolve(false);
+    });
+  });
 }
