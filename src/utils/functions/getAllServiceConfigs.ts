@@ -23,6 +23,7 @@ export const schema = z.object({
           pm2_config: z.string(),
         }),
         build: z.object({
+          builds_to_retain: z.number(),
           install_command: z.string(),
           build_command: z.string(),
           start_command: z.string(),
