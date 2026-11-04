@@ -1,0 +1,20 @@
+Services:
+  - name: Readable Services Name
+    process_id: "internal-service-name"
+
+    remote:
+      name: "github-username/repo-name"
+      branch: "branch-name"
+
+    paths:
+      root: "dirname-in-service-directory"
+      pm2_config: "ecosystem.config.cjs"
+
+    build:
+      install_command: "npm install --include=dev"
+      build_command: "npm run build"
+      start_command: "npm run start"
+      files_to_copy:
+        - ".env"
+
+    disabled: false
